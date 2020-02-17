@@ -1,0 +1,1595 @@
+---
+title: $$ Shelter Animal Outcomes$$
+author: $$應數四 410211318 林子祥\\   
+          應數碩一 610511101 林唯德\\   
+          應數四 410211303 潘星丞\\$$
+date: $$2017年6月8日$$
+output:
+  html_document: default
+---
+$$問題$$
+===
++   在美國的收容所中，每年有270萬隻貓狗被安樂死，為了將較多精力放在幫助這些不容易被領養的貓狗身上，我們希望能夠找到一種預測方法能夠將這部分的貓狗找出。
++   希望可以預測出各個狗他們會有什麼樣的未來，是被"領養(Adoption)"、"送回去給飼主(Return to Owner)"、"安樂死(Euthanasia)"、還是"送去其他收容所(Transfer)"。   
+https://www.kaggle.com/c/shelter-animal-outcomes
+
+
+$$資料介紹$$
+===
++      我們的資料中共有26729筆，10個變數。  
+包含15595隻狗，11134隻貓咪     
+ 
++   OutcomeType 為我們的反應變數，OutcomeSubType為它的子類別。   
+
+$$結果簡述$$
+===
+###SVM
+$$ Training Error = 1.360251 $$
+$$  Testing Error = 1.471125 $$
+
+###Random Forest
+$$ Training Error Rate = 0.7314072 $$  
+$$  Testing Error Rate = 1.908389  $$
+
+
+###XGboost
+$$ Training Error Rate = 0.9740993 $$       
+$$  Testing Error Rate = 1.037753  $$
+
++   依照以上的結果，發現對於我們的資料來說，XGBoost方法是最好的。
+
+
+$$處理Data$$
+===
+
+```{r message = FALSE,warning = FALSE}
+library(dplyr)
+library(ggplot2)
+library(e1071)
+library(randomForest)
+library(caret)
+library(data.table)
+library(xgboost)
+library(Matrix)
+library(formattable)
+trainInit<-read.csv("train.csv")
+head(trainInit)
+```
+
+*   刪除"ID", "Name" 以及 "OutcomeSubtype"，3個變數。  
+*   將種類為狗的資料取出
+```{r message = FALSE}
+train<-trainInit[,-c(1,2,5)]
+attach(train)
+Dogtrain<-train[which(AnimalType=="Dog"),]
+Cattrain<-train[-which(AnimalType=="Dog"),]
+Dogtrain<-Dogtrain[,-3]
+head(Dogtrain)
+attach(Dogtrain)
+```
+
+#狗   
+*  共有15595筆資料，7個變數，
+其中OutcomeType為反應變數，其餘6項為解釋變數。
+
+##OutcomeType   
++   先看各個 OucomeType 分別有幾筆資料。
+```{r echo = FALSE}
+rm(Cattrain)
+Dogtrain %>%
+    group_by(OutcomeType) %>%
+    summarise(Frequency = comma(n(), 0)) %>%
+    arrange(desc(Frequency)) %>%
+    formattable(list(Frequency = color_bar("orange")), align = 'l')
+attach(Dogtrain)
+```
+
+ 
+```{r echo = FALSE}
+Died<-which(OutcomeType=="Died")
+Dogtrain<-Dogtrain[-Died,]
+library(dplyr)
+temp1 <- gsub("_"," ", Dogtrain$OutcomeType)
+Dogtrain$OutcomeType<-as.factor(strsplit(x = temp1, split = " ") %>% sapply(function(x){x[1]}))
+head(Dogtrain)
+```
++   因為"Died"的個數太少，所以我們決定把他拿掉。 
++   另外將本來的OutcomeType中的，"Return_to_owner" 改為 "Return"。   因為後面在做資料分析的時候，會出現錯誤，說"Return_to_owner"超過64位元。
+
+
+
+##BREED   
+由於狗的血統變數太多，於是我們先做出圖表，觀察每種不同血統出現的多寡，  
+並抓出前30名出現最多次的血統，其餘的歸類到Others，以便分析。  
+```{r Breed , echo = FALSE}
+gsub(" Mix", "", Dogtrain$Breed) -> temp
+strsplit(x = temp, split = "/") %>% sapply(function(x){x[1]}) -> Dogtrain$breed1
+
+Dogtrain %>% 
+  count(breed1) %>% 
+  arrange(desc(n)) %>%  head(40) %>% 
+  ggplot(aes(x = reorder(breed1, n), y = n)) +
+  geom_bar(stat = "identity", width = 0.8) +
+  coord_flip() + 
+  theme(axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Popular Breeds for the First Breed") +
+  ylab("Number of Animals")
+
+strsplit(x = temp, split = "/") %>% sapply(function(x){x[2]}) -> Dogtrain$breed2
+
+Dogtrain %>% 
+  count(breed2) %>% 
+  arrange(desc(n)) %>%  head(30) %>% 
+  ggplot(aes(x = reorder(breed2, n), y = n)) +
+  geom_bar(stat = "identity", width = 0.8) +
+  coord_flip() + 
+  theme(axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Popular Breeds for the second Breed") +
+  ylab("Number of Animals")
+
+fst301<-c(which(Dogtrain$breed1=="Chihuahua Shorthair")#吉娃娃短毛--1#
+         ,which(Dogtrain$breed1=="Pit Bull")#比特犬--2
+         ,which(Dogtrain$breed1=="Labrador Retriever")#拉不拉多--3
+         ,which(Dogtrain$breed1=="German Shepherd")#德國牧羊犬--4
+         ,which(Dogtrain$breed1=="Australian Cattle Dog")#澳洲牧牛犬--5
+         ,which(Dogtrain$breed1=="Dachshund")#臘腸狗--6
+         ,which(Dogtrain$breed1=="Boxer")#拳師犬--7
+         ,which(Dogtrain$breed1=="Border Collie")#邊境牧羊犬--8
+         ,which(Dogtrain$breed1=="Miniature Poodle")#迷你貴賓犬--9
+         ,which(Dogtrain$breed1=="Australian Shepherd")#澳洲牧羊犬--10
+         ,which(Dogtrain$breed1=="Yorkshire Terrier")#約克夏--11
+         ,which(Dogtrain$breed1=="Jack Russell Terrier")#傑克羅素???--12
+         ,which(Dogtrain$breed1=="Miniature Schnauzer")#迷你雪納瑞--13
+         ,which(Dogtrain$breed1=="Beagle")#米格魯--14
+         ,which(Dogtrain$breed1=="Catahoula")#加泰霍拉豹犬--15
+         ,which(Dogtrain$breed1=="Rat Terrier")#捕鼠???--16
+         ,which(Dogtrain$breed1=="Siberian Husky")#西伯利亞雪橇犬--17
+         ,which(Dogtrain$breed1=="Rottweiler")#羅威那--18
+         ,which(Dogtrain$breed1=="Shih Tzu")#西施犬--19
+         ,which(Dogtrain$breed1=="Chihuahua Longhair")#吉娃娃長毛--20
+         ,which(Dogtrain$breed1=="Cairn Terrier")#凱恩???21
+         ,which(Dogtrain$breed1=="Pointer")#指示犬--22
+         ,which(Dogtrain$breed1=="Great Pyrenees")#大白熊犬--23
+         ,which(Dogtrain$breed1=="American Bulldog")#美國鬥牛犬--24
+         ,which(Dogtrain$breed1=="Anatol Shepherd")#安那托利亞牧羊犬--25
+         ,which(Dogtrain$breed1=="Australian Kelpie")#澳洲卡爾比犬--26
+         ,which(Dogtrain$breed1=="Staffordshire")#斯塔福郡鬥牛梗--27
+         ,which(Dogtrain$breed1=="Pug")#巴哥犬--28
+         ,which(Dogtrain$breed1=="Maltese")#馬爾濟斯--29
+         ,which(Dogtrain$breed1=="American Staffordshire Terrier")#美國史特富郡梗--30
+)
+
+fst302<-c(which(Dogtrain$breed2=="Chihuahua Shorthair")#吉娃娃短毛--1#
+               ,which(Dogtrain$breed2=="Pit Bull")#比特犬--2
+               ,which(Dogtrain$breed2=="Labrador Retriever")#拉不拉多--3
+               ,which(Dogtrain$breed2=="German Shepherd")#德國牧羊犬--4
+               ,which(Dogtrain$breed2=="Australian Cattle Dog")#澳洲牧牛犬--5
+               ,which(Dogtrain$breed2=="Dachshund")#臘腸狗--6
+               ,which(Dogtrain$breed2=="Boxer")#拳師犬--7
+               ,which(Dogtrain$breed2=="Border Collie")#邊境牧羊犬--8
+               ,which(Dogtrain$breed2=="Miniature Poodle")#迷你貴賓犬--9
+               ,which(Dogtrain$breed2=="Australian Shepherd")#澳洲牧羊犬--10
+               ,which(Dogtrain$breed2=="Yorkshire Terrier")#約克夏--11
+               ,which(Dogtrain$breed2=="Jack Russell Terrier")#傑克羅素???--12
+               ,which(Dogtrain$breed2=="Miniature Schnauzer")#迷你雪納瑞--13
+               ,which(Dogtrain$breed2=="Beagle")#米格魯--14
+               ,which(Dogtrain$breed2=="Catahoula")#加泰霍拉豹犬--15
+               ,which(Dogtrain$breed2=="Rat Terrier")#捕鼠???--16
+               ,which(Dogtrain$breed2=="Siberian Husky")#西伯利亞雪橇犬--17
+               ,which(Dogtrain$breed2=="Rottweiler")#羅威那--18
+               ,which(Dogtrain$breed2=="Shih Tzu")#西施犬--19
+               ,which(Dogtrain$breed2=="Chihuahua Longhair")#吉娃娃長毛--20
+               ,which(Dogtrain$breed2=="Cairn Terrier")#凱恩???21
+               ,which(Dogtrain$breed2=="Pointer")#指示犬--22
+               ,which(Dogtrain$breed2=="Great Pyrenees")#大白熊犬--23
+               ,which(Dogtrain$breed2=="American Bulldog")#美國鬥牛犬--24
+               ,which(Dogtrain$breed2=="Anatol Shepherd")#安那托利亞牧羊犬--25
+               ,which(Dogtrain$breed2=="Australian Kelpie")#澳洲卡爾比犬--26
+               ,which(Dogtrain$breed2=="Staffordshire")#斯塔福郡鬥牛梗--27
+               ,which(Dogtrain$breed2=="Pug")#巴哥犬--28
+               ,which(Dogtrain$breed2=="Maltese")#馬爾濟斯--29
+               ,which(Dogtrain$breed2=="American Staffordshire Terrier")#美國史特富郡梗--30
+)
+fst302<-fst302[which(is.na(match(fst302,fst301))==T)]
+
+breed<-c()
+for(i in 1:dim(Dogtrain)[1]){
+  if(is.na(match(i,fst301))==F){
+    breed<-c(breed,Dogtrain$breed1[i])
+  }else if(is.na(match(i,fst302))==F){
+    breed<-c(breed,Dogtrain$breed2[i])
+  }else{
+    breed<-c(breed,as.character("Other Breed"))
+  }
+}
+Dogtrain$breed<-as.factor(breed)
+Dogtrain<-Dogtrain[,-c(which(colnames(Dogtrain)=="breed1"),
+                       which(colnames(Dogtrain)=="breed2"),
+                       which(colnames(Dogtrain)=="Breed"))]
+
+Count<-rep(0,length(Dogtrain$OutcomeType))
+for(i in 1:length(Dogtrain$OutcomeType)){
+  if(Dogtrain$OutcomeType[i]=="Euthanasia")
+    Count[i]<-1
+}
+factorOut<-factor(Dogtrain$OutcomeType,levels=c("Adoption","Return","Transfer","Euthanasia"))
+ggplot(Dogtrain,aes(x=reorder(Dogtrain$breed,Count,mean),fill=factorOut)) +
+  geom_bar(stat = "count",position = "fill",width = 0.8) + 
+  ggtitle("Dog Breeds by Outcome") + 
+  coord_flip() +
+  theme(axis.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+head(Dogtrain)
+```
+
+##Age    
+由於狗的年齡當中的變數分佈的太廣，下至剛出生，上至19歲，其中也有幾周至幾個月不等，於是我們將其大致分為   
+1.  幼犬(不滿1歲)(Puppy)   
+2.  成犬(1-7歲)(AdultDog)   
+3.  老犬(7歲以上)(OldDog)    
+以便分析。  
+```{r Age , echo = FALSE}
+Age<-Dogtrain$AgeuponOutcome
+AgeCha<-as.character(Age)
+AgeStr<-strsplit(AgeCha,"[ ]")
+Puppy<-c()
+AdultDog<-c()
+OldDog<-c()
+
+for(i in 1 : length(AgeStr) ){
+  if(length(AgeStr[[i]])>0){
+  temp1<-strsplit(AgeStr[[i]]," ")[[1]]
+  temp1<-as.numeric(temp1)
+  temp2<-strsplit(AgeStr[[i]]," ")[[2]]
+    if((temp1==0 && length( which(temp2=="years") ) >0 ) |
+       length( which(temp2=="day") ) > 0 |
+       length( which(temp2=="weeks") ) > 0 |
+       length( which(temp2=="month") ) > 0 |
+       length( which(temp2=="months") ) > 0 ){
+         AgeCha[i]<-"Puppy"
+    }else if(temp1 < 7 && length( which(temp2=="years"))>0){
+      AgeCha[i]<-"AdultDog"
+    }else{
+      AgeCha[i]<-"OldDog"
+    }
+  }
+}
+Dogtrain$Age<-as.factor(AgeCha)
+#remove the missing age
+Dogtrain<-Dogtrain[-which(Dogtrain[,which(colnames(Dogtrain)=="AgeuponOutcome")]==""),-which(colnames(Dogtrain)=="AgeuponOutcome")]
+
+Count<-rep(0,length(Dogtrain$OutcomeType))
+for(i in 1:length(Dogtrain$OutcomeType)){
+  if(Dogtrain$OutcomeType[i]=="Euthanasia")
+    Count[i]<-1
+}
+factorOut<-factor(Dogtrain$OutcomeType,levels=c("Adoption","Return","Transfer","Euthanasia"))
+ggplot(Dogtrain,aes(x=reorder(Dogtrain$Age,Count,mean),fill=factorOut))+
+  geom_bar(position = "fill",width = 0.8) + 
+  ggtitle("Dog Age by Outcome") + 
+  coord_flip() +
+  theme(axis.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+ggplot(Dogtrain,aes(x=Dogtrain$OutcomeType,fill=Dogtrain$Age))+
+  geom_bar(position = "fill",width = 0.8) + 
+  ggtitle("Dog Outcome by Age") + 
+  coord_flip() +
+  theme(axis.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+head(Dogtrain)
+```
+
+
+
+##Color  
++   由於顏色的種類太多，其中也有包含斑點、胎記等特徵的出現，  
+於是我們將其大致分為:純色、雙色、三色、有斑點、有色塊、有胎記 6大類。
++   接下來，我們希望再進一步分為深淺兩種，看是否對分析有幫助，  
+一樣先做圖，發現20名以後的顏色出現次數過少，  
+所以我們將前20名出現最多的顏色中，挑出單純的"顏色"，   
+並將其分為深淺兩部分，再將之前所分的純色進一步劃分。      
+```{r Color , echo = FALSE}
+temp <- as.character(Dogtrain$Color)
+
+DogtrainColor<-Dogtrain
+DogtrainColor$Color<- strsplit(x = temp, split = "/") %>% sapply(function(x){x[1]})
+
+Color1 <- strsplit(x = temp, split = "/") %>% sapply(function(x){x[1]})
+Color2 <- strsplit(x = temp, split = "/") %>% sapply(function(x){x[2]})
+Color11 <- strsplit(x = Color1, split = " ") %>% sapply(function(x){x[1]}) 
+Color12 <- strsplit(x = Color1, split = " ") %>% sapply(function(x){x[2]}) 
+Color21 <- strsplit(x = Color2, split = " ") %>% sapply(function(x){x[1]})
+Color22 <- strsplit(x = Color2, split = " ") %>% sapply(function(x){x[2]}) 
+
+DogtrainColor %>% 
+  count(Color) %>% 
+  arrange(desc(n)) %>%  head(20) %>% 
+  ggplot(aes(x = reorder(Color, n), y = n)) +
+  geom_bar(stat = "identity", width = 0.8) +
+  coord_flip() + 
+  theme(axis.title.y = element_blank(),plot.title = element_text(hjust = 0.5)) +
+  ggtitle("Popular Colors") +
+  ylab("Number of Animals")
+
+#先分純or雙色or三色之後
+#只要有 Brindle 的 都歸到 Brindle
+#其他 例如 Blue tiger, Smoke.... 只要有除了顏色以外的名字，但不是 Brindle, Tick, Merle
+#那就讓他以顏色分
+ColorFix<-c()
+ColorFix[length(Color1)+1]<-0
+for(i in 1:length(Color1)){
+  if( is.na(Color12[i])==F && is.na(Color22[i])==F ){
+    if( Color12[i]=="Brindle" && Color22[i]=="Brindle" ||
+        Color12[i]=="Brindle" && Color22[i]=="Tick"    ||
+        Color12[i]=="Brindle" && Color22[i]=="Merle"   ||
+        Color12[i]=="Tick" && Color22[i]=="Brindle"    ||
+        Color12[i]=="Merle" && Color22[i]=="Brindle"   ){
+      ColorFix[i]<-"Brindle"
+    }else if ( Color12[i] == "Tick" && Color22[i] == "Tick" ){
+      ColorFix[i]<-"Tricolor"
+    }else if ( Color12[i]== "Merle" && Color22[i] == "Merle"|| 
+               Color12[i]=="Tick" && Color22[i]=="Merle"||
+               Color12[i]=="Merle" && Color22[i]=="Tick"){
+      ColorFix[i]<-"Merle"
+    }
+  }else if(is.na(Color12[i])==F){
+    if( Color12[i]=="Merle" || Color12[i]=="Brindle"){
+      ColorFix[i]<-Color12[i]
+    }else if(Color12[i]=="Tick"){
+      ColorFix[i]<-"Double"
+    }
+  }else if(is.na(Color22[i])==F){
+    if( Color22[i]=="Merle" || Color22[i]=="Brindle" || Color22[i]=="Tick"){
+      ColorFix[i]<-Color22[i]
+    }else if(Color22[i]=="Tick"){
+      ColorFix[i]<-"Double"
+    }
+  }
+  if(is.na(ColorFix[i])==T){
+    if(Color11[i]=="Tricolor"){
+      ColorFix[i]<-"Tricolor"
+    }else if(is.na(Color21[i])==T){
+      if(Color11[i]=="Black"||Color11[i]=="Brown"||Color11[i]=="Red"||Color11[i]=="Blue"||
+         Color11[i]=="Chocolate"||Color11[i]=="Sable"){
+        ColorFix[i]<-"Heavy"
+      }else if( Color11[i]=="White" || Color11[i]=="Tan" || Color11[i]=="Buff" || 
+                Color11[i]=="Yellow" || Color11[i]=="Fawn" || Color11[i]=="Cream" || 
+                Color11[i]=="Gray" || Color11[i]=="Gold"){
+        ColorFix[i]<-"Light"
+      }else{
+        ColorFix[i]<-"Others Simple"
+      }
+    }else {
+      ColorFix[i]<-"Double"
+    }
+  }
+}
+
+
+ColorFix<-ColorFix[-(length(Color1)+1)]
+Dogtrain$ColorFix<-as.factor(ColorFix)
+Dogtrain<-Dogtrain[,-which(colnames(Dogtrain)=="Color")]
+
+ggplot(Dogtrain,aes(x=reorder(Dogtrain$ColorFix,Count,mean),fill=factorOut))+
+  geom_bar(position = "fill",width = 0.8) + 
+  ggtitle("Dog Color by Outcome") + 
+  coord_flip() +
+  theme(axis.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+# ggplot(Dogtrain,aes(x=Dogtrain$OutcomeType,fill=Dogtrain$ColorFix))+
+#   geom_bar(position = "fill",width = 0.8) + 
+#   ggtitle("Dog Outcome by Color") + 
+#   coord_flip() +
+#   theme(axis.title = element_blank(),plot.title = element_text(hjust = 0.5))
+ggplot(Dogtrain,aes(fill=Dogtrain$ColorFix,x=Dogtrain$OutcomeType))+
+  geom_bar(position = "fill",width = 0.8) + 
+  ggtitle("Dog Outcome by Color") + 
+  coord_flip() +
+  theme(axis.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+head(Dogtrain)
+```
+最後我們得到:   
+1.  深色(Heavy)   
+2.  淺色(Light)   
+3.  其它純色(Others Simple)   
+4.  雙色(Double)   
+5.  三色(Tricolor)   
+6.  有斑點(Brindle)    
+7.  有色塊(Merle)   
+8.  有胎記(Tick)   
+
+
+
+##Time  
+由於日期範圍太大，且較長的時間(年)，或較短的時間(周、日...等)，  
+對於收容所中的動物變動，可能看不太出甚麼資訊，  
+所以我們將其分為12個月，並進行分析。  
+```{r Time , echo = FALSE}
+DateTime<-as.Date(Dogtrain$DateTime)
+
+a<-c()
+for(i in 1:length(DateTime)){
+  if(format(DateTime[i],"%m")=="01")
+  {
+    a<-c(a,"January")
+    
+  }else if(format(DateTime[i],"%m")=="02")
+  {
+    a<-c(a,"February")
+  }else if(format(DateTime[i],"%m")=="03")
+  {
+    a<-c(a,"March")
+  }else if(format(DateTime[i],"%m")=="04")
+  {
+    a<-c(a,"April")
+  }else if(format(DateTime[i],"%m")=="05")
+  {
+    a<-c(a,"May")
+  }else if(format(DateTime[i],"%m")=="06")
+  {
+    a<-c(a,"June")
+  }else if(format(DateTime[i],"%m")=="07")
+  {
+    a<-c(a,"July")
+  }else if(format(DateTime[i],"%m")=="08")
+  {
+    a<-c(a,"August")
+  }else if(format(DateTime[i],"%m")=="09")
+  {
+    a<-c(a,"September")
+  }else if(format(DateTime[i],"%m")=="10")
+  {
+    a<-c(a,"October")
+  }else if(format(DateTime[i],"%m")=="11")
+  {
+    a<-c(a,"November")
+  }else if(format(DateTime[i],"%m")=="12")
+  {
+    a<-c(a,"December")
+  }
+}
+Dogtrain$DateTime<-as.factor(a)
+ggplot(Dogtrain,aes(x=reorder(Dogtrain$DateTime,Count,mean),fill=factorOut))+
+  geom_bar(position = "fill",width = 0.8) + 
+  ggtitle("Dog Time by Outcome") + 
+  coord_flip() +
+  theme(axis.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+# ggplot(Dogtrain,aes(x=Dogtrain$OutcomeType ,fill=Dogtrain$DateTime))+
+#   geom_bar(position = "fill",width = 0.8) + 
+#   ggtitle("Dog Outcome by Time") + 
+#   coord_flip() +
+#   theme(axis.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+head(Dogtrain)
+```
+
+
+$$資料分析$$
+===
+
+#SVM
+##Case 1 :   
+  任意選取 10000 筆資料做為 Training Data。
+```{r SVMI , echo = FALSE}
+Dogtrainsvm<-Dogtrain
+
+set.seed(100)
+choiceddata<-sample(1:dim(Dogtrainsvm)[1],10000)
+SVMtrain<-Dogtrainsvm[choiceddata,]
+SVMtest<-Dogtrainsvm[-choiceddata,]
+tic<-Sys.time()
+```
+```{r}
+model<-svm(OutcomeType~.,data = SVMtrain, cost = 100,
+           gamma = 1,probability=TRUE)
+```
+```{r, echo = FALSE}
+toc<-Sys.time()
+toc-tic
+testEr<-predict(model,SVMtest[,-2],probability=TRUE)
+trainEr<-predict(model,SVMtrain[,-2],probability=TRUE)
+
+testProbM<-attr(testEr, "probabilities")
+testProbM<-matrix(testProbM,ncol = 4)
+testProbV<-c()
+for( i in 1: dim(SVMtest)[1]){
+  testProbV<-c(testProbV,testProbM[i,])
+}
+
+ytest<-array(0,c(dim(SVMtest)[1]*4))
+for(i in 1:length(testProbV)){
+  testProbV[i]<-max(min(testProbV[i],1-10e-15),10e-15)
+}
+for(i in 1:dim(SVMtest)[1]){
+  if(SVMtest[i,2]=="Adoption"){
+    ytest[(i-1)*4+1]<-1
+  }else if(SVMtest[i,2]=="Euthanasia"){
+    ytest[(i-1)*4+2]<-1
+  }else if(SVMtest[i,2]=="Return"){
+    ytest[(i-1)*4+3]<-1
+  }else if(SVMtest[i,2]=="Transfer"){
+    ytest[(i-1)*4+4]<-1
+  }
+}
+testErVa<--sum(ytest*log(testProbV))/dim(SVMtest)[1]
+
+
+trainProbM<-attr(trainEr, "probabilities")
+trainProbM<-matrix(trainProbM,ncol = 4)
+trainProbV<-c()
+for( i in 1: dim(SVMtrain)[1]){
+  trainProbV<-c(trainProbV,trainProbM[i,])
+}
+for(i in 1:length(trainProbV)){
+  trainProbV[i]<-max(min(trainProbV[i],1-10e-15),10e-15)
+}
+ytrain<-array(0,c(dim(SVMtrain)[1]*4))
+for(i in 1:dim(SVMtrain)[1]){
+  if(SVMtrain[i,2]=="Adoption"){
+    ytrain[(i-1)*4+1]<-1
+  }else if(SVMtrain[i,2]=="Euthanasia"){
+    ytrain[(i-1)*4+2]<-1
+  }else if(SVMtrain[i,2]=="Return"){
+    ytrain[(i-1)*4+3]<-1
+  }else if(SVMtrain[i,2]=="Transfer"){
+    ytrain[(i-1)*4+4]<-1
+  }
+}
+trainErVa<--sum(ytrain*log(trainProbV))/dim(SVMtrain)[1]
+
+cat("The confusion Matrix of training data.")
+cat("\n")
+table(pred=trainEr,SVMtrain$OutcomeType)
+
+cat("The confusion Matrix of testing data.")
+cat("\n")
+table(pred=testEr,SVMtest$OutcomeType)
+
+cat("Training Error Rate =",trainErVa)
+cat("\n")
+cat("Testing Error Rate =",testErVa)
+cat("\n")
+
+AdoL<-length(which(SVMtrain$OutcomeType=="Adoption"))
+ReL<-length(which(SVMtrain$OutcomeType=="Return"))
+EuL<-length(which(SVMtrain$OutcomeType=="Euthanasia"))
+TrL<-length(which(SVMtrain$OutcomeType=="Transfer"))
+
+cat("The number of Adoption in the training data is ",AdoL)
+cat("\n")
+cat("The number of Return to transfer in the training data is",ReL)
+cat("\n")
+cat("The number of Euthanasia in the training data is",EuL)
+cat("\n")
+cat("The number of Transfer in the training data is",TrL)
+cat("\n")
+
+rm(Dogtrainsvm)
+```
+
+##Case 2 :  
+任意選取 10000 筆資料做為 Training Data。  
+並將 Training Data 中的資料，用得balance一點。  
+也就是說，將 Training Data中的安樂死的資料數，  
+補到至少跟除了安樂死以外最少的OutcomeType只差100~200筆，但不比它多。  
+```{r SVMIII , echo = FALSE}
+Dogtrainsvm<-Dogtrain
+
+set.seed(100)
+choiceddata<-sample(1:dim(Dogtrainsvm)[1],10000)
+SVMtrain<-Dogtrainsvm[choiceddata,]
+SVMtest<-Dogtrainsvm[-choiceddata,]
+
+AdoL<-length(which(SVMtrain$OutcomeType=="Adoption"))
+ReL<-length(which(SVMtrain$OutcomeType=="Return"))
+EuL<-length(which(SVMtrain$OutcomeType=="Euthanasia"))
+TrL<-length(which(SVMtrain$OutcomeType=="Transfer"))
+
+a<-sort(c(AdoL,ReL,EuL,TrL))
+while( a[2]-EuL >= 200){
+  set.seed(sample(1:1000,1))
+  SVMtrain<-rbind(SVMtrain,
+                   SVMtrain[which(SVMtrain$OutcomeType=="Euthanasia")[sample(1:EuL,(a[2]-EuL)/sample(4:10,1))],])
+  EuL<-length(which(SVMtrain$OutcomeType=="Euthanasia"))
+}
+tic<-Sys.time()
+```
+```{r}
+model<-svm(OutcomeType~.,data = SVMtrain, cost = 100,
+           gamma = 5,probability=TRUE)
+```
+```{r, echo = FALSE}
+toc<-Sys.time()
+toc-tic
+testEr<-predict(model,SVMtest[,-2],probability=TRUE)
+
+trainEr<-predict(model,SVMtrain[,-2],probability=TRUE)
+
+testProbM<-attr(testEr, "probabilities")
+testProbM<-matrix(testProbM,ncol = 4)
+testProbV<-c()
+for( i in 1: dim(SVMtest)[1]){
+  testProbV<-c(testProbV,testProbM[i,])
+}
+
+ytest<-array(0,c(dim(SVMtest)[1]*4))
+for(i in 1:length(testProbV)){
+  testProbV[i]<-max(min(testProbV[i],1-10e-15),10e-15)
+}
+for(i in 1:dim(SVMtest)[1]){
+  if(SVMtest[i,2]=="Adoption"){
+    ytest[(i-1)*4+1]<-1
+  }else if(SVMtest[i,2]=="Euthanasia"){
+    ytest[(i-1)*4+2]<-1
+  }else if(SVMtest[i,2]=="Return"){
+    ytest[(i-1)*4+3]<-1
+  }else if(SVMtest[i,2]=="Transfer"){
+    ytest[(i-1)*4+4]<-1
+  }
+}
+testErVa<--sum(ytest*log(testProbV))/dim(SVMtest)[1]
+
+
+trainProbM<-attr(trainEr, "probabilities")
+trainProbM<-matrix(trainProbM,ncol = 4)
+trainProbV<-c()
+for( i in 1: dim(SVMtrain)[1]){
+  trainProbV<-c(trainProbV,trainProbM[i,])
+}
+for(i in 1:length(trainProbV)){
+  trainProbV[i]<-max(min(trainProbV[i],1-10e-15),10e-15)
+}
+ytrain<-array(0,c(dim(SVMtrain)[1]*4))
+for(i in 1:dim(SVMtrain)[1]){
+  if(SVMtrain[i,2]=="Adoption"){
+    ytrain[(i-1)*4+1]<-1
+  }else if(SVMtrain[i,2]=="Euthanasia"){
+    ytrain[(i-1)*4+2]<-1
+  }else if(SVMtrain[i,2]=="Return"){
+    ytrain[(i-1)*4+3]<-1
+  }else if(SVMtrain[i,2]=="Transfer"){
+    ytrain[(i-1)*4+4]<-1
+  }
+}
+trainErVa<--sum(ytrain*log(trainProbV))/dim(SVMtrain)[1]
+
+cat("The confusion Matrix of training data.")
+cat("\n")
+table(trainEr,SVMtrain$OutcomeType)
+
+cat("The confusion Matrix of testing data.")
+cat("\n")
+table(testEr,SVMtest$OutcomeType)
+
+cat("Training Error Rate =",trainErVa)
+cat("\n")
+cat("Testing Error Rate =",testErVa)
+cat("\n")
+
+cat("The number of Adoption in the training data is ",AdoL)
+cat("\n")
+cat("The number of Euthanasia in the training data is",EuL)
+cat("\n")
+cat("The number of Return to transfer in the training data is",ReL)
+cat("\n")
+cat("The number of Transfer in the training data is",TrL)
+cat("\n")
+
+rm(Dogtrainsvm)
+```
+
+
+#Random Forest
+##Case 1 :  
+  任意選取 10000 筆資料做為 Training Data。
+  
+```{r Random Forest I , echo = FALSE}
+DogtrainRF<-Dogtrain
+
+set.seed(100)
+choiceddata<-sample(1:dim(DogtrainRF)[1],10000)
+RFtrain<-DogtrainRF[choiceddata,]
+RFtest<-DogtrainRF[-choiceddata,]
+tic<-Sys.time()
+```
+```{r}
+model<-randomForest(OutcomeType~.,data=RFtrain,
+                    ntree=600,
+                    mtry=4, 
+                    importance = TRUE)
+```
+```{r, echo = FALSE}
+toc<-Sys.time()
+toc-tic
+plot(model, ylim=c(0,1))
+legend('topright', colnames(model$err.rate), col=1:6, fill=1:6)
+
+###
+importance    <- importance(model)
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance = round(importance[ ,'MeanDecreaseGini'],2))
+
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+
+# Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+    y = Importance)) +
+  geom_bar(stat='identity', colour = 'black') +
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+    hjust=0, vjust=0.55, size = 4, colour = 'lavender',
+    fontface = 'bold') +
+  labs(x = 'Variables', title = 'Relative Variable Importance') +
+  coord_flip()
+###
+
+testProbM<-predict(model,RFtest[,-2], type = 'vote')
+testProbM<-matrix(testProbM,ncol = 4)
+testProbV<-c()
+for( i in 1: dim(RFtest)[1]){
+  testProbV<-c(testProbV,testProbM[i,])
+}
+
+ytest<-array(0,c(dim(RFtest)[1]*4))
+for(i in 1:length(testProbV)){
+  testProbV[i]<-max(min(testProbV[i],1-10e-15),10e-15)
+}
+for(i in 1:dim(RFtest)[1]){
+  if(RFtest[i,2]=="Adoption"){
+    ytest[(i-1)*4+1]<-1
+  }else if(RFtest[i,2]=="Euthanasia"){
+    ytest[(i-1)*4+2]<-1
+  }else if(RFtest[i,2]=="Return"){
+    ytest[(i-1)*4+3]<-1
+  }else if(RFtest[i,2]=="Transfer"){
+    ytest[(i-1)*4+4]<-1
+  }
+}
+testErVa<--sum(ytest*log(testProbV))/dim(RFtest)[1]
+
+
+trainProbM<-predict(model,RFtrain[,-2], type = 'vote')
+trainProbM<-matrix(trainProbM,ncol = 4)
+trainProbV<-c()
+for( i in 1: dim(RFtrain)[1]){
+  trainProbV<-c(trainProbV,trainProbM[i,])
+}
+for(i in 1:length(trainProbV)){
+  trainProbV[i]<-max(min(trainProbV[i],1-10e-15),10e-15)
+}
+ytrain<-array(0,c(dim(RFtrain)[1]*4))
+for(i in 1:dim(RFtrain)[1]){
+  if(RFtrain[i,2]=="Adoption"){
+    ytrain[(i-1)*4+1]<-1
+  }else if(RFtrain[i,2]=="Euthanasia"){
+    ytrain[(i-1)*4+2]<-1
+  }else if(RFtrain[i,2]=="Return"){
+    ytrain[(i-1)*4+3]<-1
+  }else if(RFtrain[i,2]=="Transfer"){
+    ytrain[(i-1)*4+4]<-1
+  }
+}
+trainErVa<--sum(ytrain*log(trainProbV))/dim(RFtrain)[1]
+
+trainEr<-predict(model,RFtrain[,-2])
+testEr<-predict(model,RFtest[,-2])
+
+cat("The confusion Matrix of training data.")
+cat("\n")
+confusionMatrix(trainEr,RFtrain$OutcomeType)$table
+
+
+cat("The confusion Matrix of testing data.")
+cat("\n")
+confusionMatrix(testEr,RFtest$OutcomeType)$table
+cat("Training Error Rate =",trainErVa)
+cat("\n")
+cat("Testing Error Rate =",testErVa)
+cat("\n")
+
+rm(DogtrainRF)
+```
+
+
+##Case 2 :  
+任意選取 10000 筆資料做為 Training Data。  
+並將 Training Data 中的資料，用得balance一點。  
+也就是說，將 Training Data中的安樂死的資料數，  
+補到至少跟除了安樂死以外最少的OutcomeType只差100~200筆，但不比它多。
+```{r Random Forest II , echo = FALSE}
+DogtrainRF<-Dogtrain
+
+choiceddata<-sample(1:dim(DogtrainRF)[1],10000)
+
+RFtrain<-DogtrainRF[choiceddata,]
+RFtest<-DogtrainRF[-choiceddata,]
+
+AdoL<-length(which(RFtrain$OutcomeType=="Adoption"))
+ReL<-length(which(RFtrain$OutcomeType=="Return"))
+EuL<-length(which(RFtrain$OutcomeType=="Euthanasia"))
+TrL<-length(which(RFtrain$OutcomeType=="Transfer"))
+
+a<-sort(c(AdoL,ReL,EuL,TrL))
+while( a[2]-EuL >= 200){
+  set.seed(sample(1:1000,1))
+  RFtrain<-rbind(RFtrain,
+                   RFtrain[which(RFtrain$OutcomeType=="Euthanasia")[sample(1:EuL,(a[2]-EuL)/sample(4:10,1))],])
+  EuL<-length(which(RFtrain$OutcomeType=="Euthanasia"))
+}
+tic<-Sys.time()
+```
+```{r}
+model<-randomForest(OutcomeType~.,
+                    data=RFtrain,
+                    mtry=4,
+                    ntree=600,
+                    importance = TRUE)
+```
+```{r, echo = FALSE}
+toc<-Sys.time()
+toc-tic
+###
+importance    <- importance(model)
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance = round(importance[ ,'MeanDecreaseGini'],2))
+
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+
+# Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+    y = Importance)) +
+  geom_bar(stat='identity', colour = 'black') +
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+    hjust=0, vjust=0.55, size = 4, colour = 'lavender',
+    fontface = 'bold') +
+  labs(x = 'Variables', title = 'Relative Variable Importance') +
+  coord_flip()
+###
+
+
+
+testProbM<-predict(model,RFtest[,-2], type = 'vote')
+testProbM<-matrix(testProbM,ncol = 4)
+testProbV<-c()
+for( i in 1: dim(RFtest)[1]){
+  testProbV<-c(testProbV,testProbM[i,])
+}
+
+ytest<-array(0,c(dim(RFtest)[1]*4))
+for(i in 1:length(testProbV)){
+  testProbV[i]<-max(min(testProbV[i],1-10e-15),10e-15)
+}
+for(i in 1:dim(RFtest)[1]){
+  if(RFtest[i,2]=="Adoption"){
+    ytest[(i-1)*4+1]<-1
+  }else if(RFtest[i,2]=="Euthanasia"){
+    ytest[(i-1)*4+2]<-1
+  }else if(RFtest[i,2]=="Return"){
+    ytest[(i-1)*4+3]<-1
+  }else if(RFtest[i,2]=="Transfer"){
+    ytest[(i-1)*4+4]<-1
+  }
+}
+testErVa<--sum(ytest*log(testProbV))/dim(RFtest)[1]
+
+
+trainProbM<-predict(model,RFtrain[,-2], type = 'vote')
+trainProbM<-matrix(trainProbM,ncol = 4)
+trainProbV<-c()
+for( i in 1: dim(RFtrain)[1]){
+  trainProbV<-c(trainProbV,trainProbM[i,])
+}
+for(i in 1:length(trainProbV)){
+  trainProbV[i]<-max(min(trainProbV[i],1-10e-15),10e-15)
+}
+ytrain<-array(0,c(dim(RFtrain)[1]*4))
+for(i in 1:dim(RFtrain)[1]){
+  if(RFtrain[i,2]=="Adoption"){
+    ytrain[(i-1)*4+1]<-1
+  }else if(RFtrain[i,2]=="Euthanasia"){
+    ytrain[(i-1)*4+2]<-1
+  }else if(RFtrain[i,2]=="Return"){
+    ytrain[(i-1)*4+3]<-1
+  }else if(RFtrain[i,2]=="Transfer"){
+    ytrain[(i-1)*4+4]<-1
+  }
+}
+trainErVa<--sum(ytrain*log(trainProbV))/dim(RFtrain)[1]
+
+testEr<-predict(model,RFtest[,-2])
+trainEr<-predict(model,RFtrain[,-2])
+plot(model, ylim=c(0,1))
+legend('topright', colnames(model$err.rate), col=1:6, fill=1:6)
+
+cat("The confusion Matrix of training data.")
+cat("\n")
+confusionMatrix(trainEr,RFtrain$OutcomeType)$table
+
+cat("The confusion Matrix of testing data.")
+cat("\n")
+confusionMatrix(testEr,RFtest$OutcomeType)$table
+
+
+cat("Training Error Rate =",trainErVa)
+cat("\n")
+
+cat("Testing Error Rate =",testErVa)
+cat("\n")
+
+cat("The number of Adoption in the training data is ",AdoL)
+cat("\n")
+cat("The number of Return to transfer in the training data is",ReL)
+cat("\n")
+cat("The number of Euthanasia in the training data is",EuL)
+cat("\n")
+cat("The number of Transfer in the training data is",TrL)
+cat("\n")
+
+rm(DogtrainRF)
+
+```
+
+#xgboost
+##Case 1:   
+    complete not deal with data but have delete some x
+```{r, echo = FALSE}
+library(xgboost)
+library(Matrix)
+DogtrainXG<-train[which(AnimalType=="Dog"),]
+head(DogtrainXG)
+y_Dogtrain <- as.numeric(as.factor(DogtrainXG$OutcomeType)) - 1
+
+Dogtrain.x = subset(DogtrainXG,select=-c(OutcomeType))
+train_sparse <- Matrix(as.matrix(sapply(
+			Dogtrain.x,as.numeric)),
+			sparse=TRUE)
+
+set.seed(100)
+num = c(1:nrow(train_sparse))
+n1 = sample(num ,10000)
+n2=num[-n1]
+
+y1 = y_Dogtrain[n1]
+y2 = y_Dogtrain[n2]
+
+trainXG = train_sparse[n1,]
+testXG  = train_sparse[n2,]
+#delete outcometype but not choiced N
+dall.train = xgb.DMatrix(data=train_sparse, label=y_Dogtrain) 
+#delete outcometype and choice N
+dtrain <- xgb.DMatrix(data=trainXG, label=y1)
+dtest <- xgb.DMatrix(data=testXG, label=y2)
+```
+
+設參數跑xgb.cv看best iteration
+```{r}
+xgb_params=list( 	
+  	objective="multi:softprob",
+  	eta= 0.1, 
+  	max_depth= 6, 
+  	colsample_bytree= 0.7,
+  	subsample = 0.7,
+  	num_class = 5)
+```
+```{r, echo = FALSE}
+set.seed(100)
+xgb_cv <- xgb.cv(data = dall.train,
+                 params = xgb_params,
+                 nrounds = 3000,
+                 maximize = FALSE,
+                 prediction = TRUE,
+                 nfold = 5,
+                 print_every_n = 10,
+                 early_stopping_rounds = 10
+                 ,nthread=8,
+			eval_metric='mlogloss'
+)
+best.nround = xgb_cv$best_iteration
+```
+建構模型去run
+```{r, echo = FALSE}
+# build model
+set.seed(100)
+xgb_model <- xgb.train(	data = dtrain,
+                       	params = xgb_params,
+                       	watchlist = 
+				list(train = dtrain, test = dtest),
+                       	nrounds =best.nround,
+                       	verbose = 1,
+                       	print_every_n = 5,
+				eval_metric='mlogloss'
+)
+
+  feature = xgb.importance(feature_names = colnames(train_sparse), 
+                           model = xgb_model)
+  
+  feature[1:5,]
+  xgb.plot.importance(feature)
+```
+算train-logloss
+```{r, echo = FALSE}
+#train logloss
+	pred1 = predict(xgb_model,dtrain)
+	pred1 = t(matrix(pred1,nrow=5)) %>% data.table
+	colnames(pred1) = c("Adoption", "Died",
+				 "Euthanasia",
+				"Return_to_owner", "Transfer")
+		
+	#correct max value
+	find.max.fun=function(temp){
+	value = which( ( temp == max(temp) )==1 )-1
+	return(value)
+}
+	
+		
+	pred1$class = apply(pred1,1,find.max.fun)
+  pred1
+  
+	cat("The confusion Matrix of training data.")
+  cat("\n")
+	table(y1,pred1$class)
+	
+	log.loss=function(pred1,y1)
+	  {
+	y2=y1+1
+	
+	temp <- pred1[,1:5,with=F] %>% as.matrix
+		
+	temp2 = sapply(c(1: length(y2) ),function(x){
+			log( temp[x,y2[x]] )
+		})
+	value = -mean(temp2)
+	return(value)
+	}
+	
+	train.logloss = log.loss(pred1,y1)
+  
+  cat("Training Error Rate =",train.logloss)
+  cat("\n")
+
+```
+算test-logloss
+```{r, echo = FALSE}
+	pred2 = predict(xgb_model,dtest)
+	pred2 = t(matrix(pred2,nrow=5)) %>% data.table
+	colnames(pred2) = c("Adoption", 
+				"Died", "Euthanasia", 
+				"Return_to_owner", "Transfer")
+		
+	#correct max value
+	find.max.fun=function(temp){
+	value = which( ( temp == max(temp) )==1 )-1
+	return(value)
+}
+	
+	
+	pred2$class = apply(pred2,1,find.max.fun)
+  pred2
+	
+  cat("The confusion Matrix of testing data.")
+  cat("\n")
+	table(y2,pred2$class)
+	
+	log.loss=function(pred1,y1)
+	  {
+	y2=y1+1
+	
+	temp <- pred1[,1:5,with=F] %>% as.matrix
+		
+	temp2 = sapply(c(1: length(y2) ),function(x){
+			log( temp[x,y2[x]] )
+		})
+	value = -mean(temp2)
+	return(value)
+	}
+	
+	test.logloss = log.loss(pred2,y2)
+	
+	cat("Testing Error Rate =",test.logloss)
+  cat("\n")
+```
+
+##Case 2 :   
+      用前面處理完的資料跑xgboost
+```{r, echo = FALSE}
+library(xgboost)
+library(Matrix)
+head(DogtrainXG)
+y_Dogtrain <- as.numeric(as.factor(Dogtrain$OutcomeType)) - 1
+
+Dogtrain.x = subset(Dogtrain,select=-c(OutcomeType))
+train_sparse <- Matrix(as.matrix(sapply(
+			Dogtrain.x,as.numeric)),
+			sparse=TRUE)
+
+set.seed(100)
+num = c(1:nrow(train_sparse))
+n1 = sample(num ,10000)
+n2=num[-n1]
+
+y1 = y_Dogtrain[n1]
+y2 = y_Dogtrain[n2]
+
+trainXG = train_sparse[n1,]
+testXG  = train_sparse[n2,]
+#delete outcometype but not choiced N
+dall.train = xgb.DMatrix(data=train_sparse, label=y_Dogtrain) 
+#delete outcometype and choice N
+dtrain <- xgb.DMatrix(data=trainXG, label=y1)
+dtest <- xgb.DMatrix(data=testXG, label=y2)
+```
+
+這裡設參數並且跑xgb.cv看best iteration
+```{r}
+xgb_params=list( 	
+  	objective="multi:softprob",
+  	eta= 0.1, 
+  	max_depth= 6, 
+  	colsample_bytree= 0.7,
+  	subsample = 0.7,
+  	num_class = 4)
+```
+```{r, echo = FALSE}
+set.seed(100)
+xgb_cv <- xgb.cv(data = dall.train,
+                 params = xgb_params,
+                 nrounds = 3000,
+                 maximize = FALSE,
+                 prediction = TRUE,
+                 nfold = 5,
+                 print_every_n = 10,
+                 early_stopping_rounds = 10
+                 ,nthread=8,
+			eval_metric='mlogloss'
+)
+best.nround = xgb_cv$best_iteration
+```
+建構模型去run
+```{r, echo = FALSE}
+# build model
+set.seed(100)
+xgb_model <- xgb.train(	data = dtrain,
+                       	params = xgb_params,
+                       	watchlist = 
+				list(train = dtrain, test = dtest),
+                       	nrounds =best.nround,
+                       	verbose = 1,
+                       	print_every_n = 5,
+				eval_metric='mlogloss'
+)
+
+  feature = xgb.importance(feature_names = colnames(train_sparse), 
+                           model = xgb_model)
+  
+  feature[1:5,]
+  xgb.plot.importance(feature)
+```
+算train-logloss 
+```{r, echo = FALSE}
+#train logloss
+	pred1 = predict(xgb_model,dtrain)
+	pred1 = t(matrix(pred1,nrow=4)) %>% data.table
+	colnames(pred1) = c("Adoption", 
+				 "Euthanasia", 
+				"Return_to_owner", "Transfer")
+		
+	#correct max value
+	find.max.fun=function(temp){
+	value = which( ( temp == max(temp) )==1 )-1
+	return(value)
+}
+	
+		
+	pred1$class = apply(pred1,1,find.max.fun)
+	pred1
+
+	cat("The confusion Matrix of training data.")
+  cat("\n")
+	table(y1,pred1$class)
+	
+	log.loss=function(pred1,y1)
+	  {
+	y2=y1+1
+	
+	temp <- pred1[,1:4,with=F] %>% as.matrix
+		
+	temp2 = sapply(c(1: length(y2) ),function(x){
+			log( temp[x,y2[x]] )
+		})
+	value = -mean(temp2)
+	return(value)
+	}
+	
+	train.logloss = log.loss(pred1,y1)
+  cat("Training Error Rate =",train.logloss)
+  cat("\n")
+```
+算test-logloss
+```{r, echo = FALSE}
+	pred2 = predict(xgb_model,dtest)
+	pred2 = t(matrix(pred2,nrow=4)) %>% data.table
+	colnames(pred2) = c("Adoption", 
+				 "Euthanasia", 
+				"Return_to_owner", "Transfer")
+		
+	#correct max value
+	find.max.fun=function(temp){
+	value = which( ( temp == max(temp) )==1 )-1
+	return(value)
+}
+	
+	
+	pred2$class = apply(pred2,1,find.max.fun)
+  pred2
+	
+  cat("The confusion Matrix of testing data.")
+  cat("\n")
+	table(y2,pred2$class)
+	
+	log.loss=function(pred1,y1)
+	  {
+	y2=y1+1
+	
+	temp <- pred1[,1:4,with=F] %>% as.matrix
+		
+	temp2 = sapply(c(1: length(y2) ),function(x){
+			log( temp[x,y2[x]] )
+		})
+	value = -mean(temp2)
+	return(value)
+	}
+	
+	test.logloss = log.loss(pred2,y2)
+	cat("Testing Error Rate =",test.logloss)
+  cat("\n")
+	
+```
+##Case 3 :   
+用前面處理完的資料(不包含AgeuponOutcomeType跟DateTime)跑xgb (這裡另外處理AgeuponOutcomeType跟DateTime)
+```{r, echo = FALSE}
+DogtrainXG<-train[which(train$AnimalType=="Dog"),]
+
+gsub(" Mix", "", DogtrainXG$Breed) -> temp
+strsplit(x = temp, split = "/") %>% sapply(function(x){x[1]}) -> DogtrainXG$breed1
+
+strsplit(x = temp, split = "/") %>% sapply(function(x){x[2]}) -> DogtrainXG$breed2
+
+
+fst301<-c(which(DogtrainXG$breed1=="Chihuahua Shorthair")#吉娃娃短毛--1#
+         ,which(DogtrainXG$breed1=="Pit Bull")#比特犬--2
+         ,which(DogtrainXG$breed1=="Labrador Retriever")#拉不拉多--3
+         ,which(DogtrainXG$breed1=="German Shepherd")#德國牧羊犬--4
+         ,which(DogtrainXG$breed1=="Australian Cattle Dog")#澳洲牧牛犬--5
+         ,which(DogtrainXG$breed1=="Dachshund")#臘腸狗--6
+         ,which(DogtrainXG$breed1=="Boxer")#拳師犬--7
+         ,which(DogtrainXG$breed1=="Border Collie")#邊境牧羊犬--8
+         ,which(DogtrainXG$breed1=="Miniature Poodle")#迷你貴賓犬--9
+         ,which(DogtrainXG$breed1=="Australian Shepherd")#澳洲牧羊犬--10
+         ,which(DogtrainXG$breed1=="Yorkshire Terrier")#約克夏--11
+         ,which(DogtrainXG$breed1=="Jack Russell Terrier")#傑克羅素???--12
+         ,which(DogtrainXG$breed1=="Miniature Schnauzer")#迷你雪納瑞--13
+         ,which(DogtrainXG$breed1=="Beagle")#米格魯--14
+         ,which(DogtrainXG$breed1=="Catahoula")#加泰霍拉豹犬--15
+         ,which(DogtrainXG$breed1=="Rat Terrier")#捕鼠???--16
+         ,which(DogtrainXG$breed1=="Siberian Husky")#西伯利亞雪橇犬--17
+         ,which(DogtrainXG$breed1=="Rottweiler")#羅威那--18
+         ,which(DogtrainXG$breed1=="Shih Tzu")#西施犬--19
+         ,which(DogtrainXG$breed1=="Chihuahua Longhair")#吉娃娃長毛--20
+         ,which(DogtrainXG$breed1=="Cairn Terrier")#凱恩???21
+         ,which(DogtrainXG$breed1=="Pointer")#指示犬--22
+         ,which(DogtrainXG$breed1=="Great Pyrenees")#大白熊犬--23
+         ,which(DogtrainXG$breed1=="American Bulldog")#美國鬥牛犬--24
+         ,which(DogtrainXG$breed1=="Anatol Shepherd")#安那托利亞牧羊犬--25
+         ,which(DogtrainXG$breed1=="Australian Kelpie")#澳洲卡爾比犬--26
+         ,which(DogtrainXG$breed1=="Staffordshire")#斯塔福郡鬥牛梗--27
+         ,which(DogtrainXG$breed1=="Pug")#巴哥犬--28
+         ,which(DogtrainXG$breed1=="Maltese")#馬爾濟斯--29
+         ,which(DogtrainXG$breed1=="American Staffordshire Terrier")#美國史特富郡梗--30
+)
+
+fst302<-c(which(DogtrainXG$breed2=="Chihuahua Shorthair")#吉娃娃短毛--1#
+               ,which(DogtrainXG$breed2=="Pit Bull")#比特犬--2
+               ,which(DogtrainXG$breed2=="Labrador Retriever")#拉不拉多--3
+               ,which(DogtrainXG$breed2=="German Shepherd")#德國牧羊犬--4
+               ,which(DogtrainXG$breed2=="Australian Cattle Dog")#澳洲牧牛犬--5
+               ,which(DogtrainXG$breed2=="Dachshund")#臘腸狗--6
+               ,which(DogtrainXG$breed2=="Boxer")#拳師犬--7
+               ,which(DogtrainXG$breed2=="Border Collie")#邊境牧羊犬--8
+               ,which(DogtrainXG$breed2=="Miniature Poodle")#迷你貴賓犬--9
+               ,which(DogtrainXG$breed2=="Australian Shepherd")#澳洲牧羊犬--10
+               ,which(DogtrainXG$breed2=="Yorkshire Terrier")#約克夏--11
+               ,which(DogtrainXG$breed2=="Jack Russell Terrier")#傑克羅素???--12
+               ,which(DogtrainXG$breed2=="Miniature Schnauzer")#迷你雪納瑞--13
+               ,which(DogtrainXG$breed2=="Beagle")#米格魯--14
+               ,which(DogtrainXG$breed2=="Catahoula")#加泰霍拉豹犬--15
+               ,which(DogtrainXG$breed2=="Rat Terrier")#捕鼠???--16
+               ,which(DogtrainXG$breed2=="Siberian Husky")#西伯利亞雪橇犬--17
+               ,which(DogtrainXG$breed2=="Rottweiler")#羅威那--18
+               ,which(DogtrainXG$breed2=="Shih Tzu")#西施犬--19
+               ,which(DogtrainXG$breed2=="Chihuahua Longhair")#吉娃娃長毛--20
+               ,which(DogtrainXG$breed2=="Cairn Terrier")#凱恩???21
+               ,which(DogtrainXG$breed2=="Pointer")#指示犬--22
+               ,which(DogtrainXG$breed2=="Great Pyrenees")#大白熊犬--23
+               ,which(DogtrainXG$breed2=="American Bulldog")#美國鬥牛犬--24
+               ,which(DogtrainXG$breed2=="Anatol Shepherd")#安那托利亞牧羊犬--25
+               ,which(DogtrainXG$breed2=="Australian Kelpie")#澳洲卡爾比犬--26
+               ,which(DogtrainXG$breed2=="Staffordshire")#斯塔福郡鬥牛梗--27
+               ,which(DogtrainXG$breed2=="Pug")#巴哥犬--28
+               ,which(Dogtrain$breed2=="Maltese")#馬爾濟斯--29
+               ,which(Dogtrain$breed2=="American Staffordshire Terrier")#美國史特富郡梗--30
+)
+fst302<-fst302[which(is.na(match(fst302,fst301))==T)]
+
+breed<-c()
+for(i in 1:dim(DogtrainXG)[1]){
+  if(is.na(match(i,fst301))==F){
+    breed<-c(breed,DogtrainXG$breed1[i])
+  }else if(is.na(match(i,fst302))==F){
+    breed<-c(breed,DogtrainXG$breed2[i])
+  }else{
+    breed<-c(breed,as.character("Other Breed"))
+  }
+}
+DogtrainXG$breed<-as.factor(breed)
+DogtrainXG<-DogtrainXG[,-c(which(colnames(DogtrainXG)=="breed1"),
+                       which(colnames(DogtrainXG)=="breed2"),
+                       which(colnames(DogtrainXG)=="Breed"))]
+
+
+temp <- as.character(DogtrainXG$Color)
+Color1 <- strsplit(x = temp, split = "/") %>% sapply(function(x){x[1]})
+Color2 <- strsplit(x = temp, split = "/") %>% sapply(function(x){x[2]})
+Color11 <- strsplit(x = Color1, split = " ") %>% sapply(function(x){x[1]}) 
+Color12 <- strsplit(x = Color1, split = " ") %>% sapply(function(x){x[2]}) 
+Color21 <- strsplit(x = Color2, split = " ") %>% sapply(function(x){x[1]})
+Color22 <- strsplit(x = Color2, split = " ") %>% sapply(function(x){x[2]}) 
+
+ColorFix<-c()
+ColorFix[length(Color1)+1]<-0
+for(i in 1:length(Color1)){
+  if( is.na(Color12[i])==F && is.na(Color22[i])==F ){
+    if( Color12[i]=="Brindle" && Color22[i]=="Brindle" ||
+        Color12[i]=="Brindle" && Color22[i]=="Tick"    ||
+        Color12[i]=="Brindle" && Color22[i]=="Merle"   ||
+        Color12[i]=="Tick" && Color22[i]=="Brindle"    ||
+        Color12[i]=="Merle" && Color22[i]=="Brindle"   ){
+      ColorFix[i]<-"Brindle"
+    }else if ( Color12[i] == "Tick" && Color22[i] == "Tick" ){
+      ColorFix[i]<-"Tricolor"
+    }else if ( Color12[i]== "Merle" && Color22[i] == "Merle"|| 
+               Color12[i]=="Tick" && Color22[i]=="Merle"||
+               Color12[i]=="Merle" && Color22[i]=="Tick"){
+      ColorFix[i]<-"Merle"
+    }
+  }else if(is.na(Color12[i])==F){
+    if( Color12[i]=="Merle" || Color12[i]=="Brindle"){
+      ColorFix[i]<-Color12[i]
+    }else if(Color12[i]=="Tick"){
+      ColorFix[i]<-"Double"
+    }
+  }else if(is.na(Color22[i])==F){
+    if( Color22[i]=="Merle" || Color22[i]=="Brindle" || Color22[i]=="Tick"){
+      ColorFix[i]<-Color22[i]
+    }else if(Color22[i]=="Tick"){
+      ColorFix[i]<-"Double"
+    }
+  }
+  if(is.na(ColorFix[i])==T){
+    if(Color11[i]=="Tricolor"){
+      ColorFix[i]<-"Tricolor"
+    }else if(is.na(Color21[i])==T){
+      if(Color11[i]=="Black"||Color11[i]=="Brown"||Color11[i]=="Red"||Color11[i]=="Blue"||
+         Color11[i]=="Chocolate"||Color11[i]=="Sable"){
+        ColorFix[i]<-"Heavy"
+      }else if( Color11[i]=="White" || Color11[i]=="Tan" || Color11[i]=="Buff" || 
+                Color11[i]=="Yellow" || Color11[i]=="Fawn" || Color11[i]=="Cream" || 
+                Color11[i]=="Gray" || Color11[i]=="Gold"){
+        ColorFix[i]<-"Light"
+      }else{
+        ColorFix[i]<-"Others Simple"
+      }
+    }else {
+      ColorFix[i]<-"Double"
+    }
+  }
+}
+
+
+ColorFix<-ColorFix[-(length(Color1)+1)]
+DogtrainXG$ColorFix<-as.factor(ColorFix)
+DogtrainXG<-DogtrainXG[,-which(colnames(DogtrainXG)=="Color")]
+```
+
+```{r, echo = FALSE}
+#new method to DateTime
+DogtrainXG$DateTime = DogtrainXG$DateTime %>% 
+			as.Date %>% format(.,"%m")
+#new method to Ageuponoutcome
+	DogtrainXG$AgeuponOutcome <- gsub(" years?","0000",DogtrainXG$AgeuponOutcome)
+	DogtrainXG$AgeuponOutcome <- gsub(" months?","00",DogtrainXG$AgeuponOutcome)
+	DogtrainXG$AgeuponOutcome <- gsub(" weeks?","0",DogtrainXG$AgeuponOutcome)
+	DogtrainXG$AgeuponOutcome <- gsub(" days?","",DogtrainXG$AgeuponOutcome)
+	DogtrainXG$AgeuponOutcome <- as.numeric(paste0("0",DogtrainXG$AgeuponOutcome))
+head(DogtrainXG)
+```
+
+```{r, echo = FALSE}
+library(xgboost)
+library(Matrix)
+y_Dogtrain <- as.numeric(as.factor(Dogtrain$OutcomeType)) - 1
+
+Dogtrain.x = subset(Dogtrain,select=-c(OutcomeType))
+train_sparse <- Matrix(as.matrix(sapply(
+			Dogtrain.x,as.numeric)),
+			sparse=TRUE)
+
+set.seed(100)
+num = c(1:nrow(train_sparse))
+n1 = sample(num ,10000)
+n2=num[-n1]
+
+y1 = y_Dogtrain[n1]
+y2 = y_Dogtrain[n2]
+
+trainXG = train_sparse[n1,]
+testXG  = train_sparse[n2,]
+#delete outcometype but not choiced N
+dall.train = xgb.DMatrix(data=train_sparse, label=y_Dogtrain) 
+#delete outcometype and choice N
+dtrain <- xgb.DMatrix(data=trainXG, label=y1)
+dtest <- xgb.DMatrix(data=testXG, label=y2)
+```
+
+設參數跑xgb.cv並且看best iteration
+```{r}
+xgb_params=list( 	
+  	objective="multi:softprob",
+  	eta= 0.1, 
+  	max_depth= 6, 
+  	colsample_bytree= 0.7,
+  	subsample = 0.7,
+  	num_class = 4)
+```
+```{r, echo = FALSE}
+set.seed(100)
+xgb_cv <- xgb.cv(data = dall.train,
+                 params = xgb_params,
+                 nrounds = 3000,
+                 maximize = FALSE,
+                 prediction = TRUE,
+                 nfold = 5,
+                 print_every_n = 10,
+                 early_stopping_rounds = 10
+                 ,nthread=8,
+			eval_metric='mlogloss'
+)
+best.nround = xgb_cv$best_iteration
+```
+建構模型四run
+```{r, echo = FALSE}
+# build model
+set.seed(100)
+xgb_model <- xgb.train(	data = dtrain,
+                       	params = xgb_params,
+                       	watchlist = 
+				list(train = dtrain, test = dtest),
+                       	nrounds =best.nround,
+                       	verbose = 1,
+                       	print_every_n = 5,
+				eval_metric='mlogloss'
+)
+
+  feature = xgb.importance(feature_names = colnames(train_sparse), 
+                           model = xgb_model)
+  
+  feature[1:5,]
+  xgb.plot.importance(feature)
+```
+算train-logloss
+```{r, echo = FALSE}
+#train logloss
+	pred1 = predict(xgb_model,dtrain)
+	pred1 = t(matrix(pred1,nrow=4)) %>% data.table
+	colnames(pred1) = c("Adoption", 
+				 "Euthanasia", 
+				"Return_to_owner", "Transfer")
+		
+	#correct max value
+	find.max.fun=function(temp){
+	value = which( ( temp == max(temp) )==1 )-1
+	return(value)
+}
+	
+		
+	pred1$class = apply(pred1,1,find.max.fun)
+  pred1
+  
+  cat("The confusion Matrix of training data.")
+  cat("\n")
+	table(y1,pred1$class)
+	
+	log.loss=function(pred1,y1)
+	  {
+	y2=y1+1
+	
+	temp <- pred1[,1:4,with=F] %>% as.matrix
+		
+	temp2 = sapply(c(1: length(y2) ),function(x){
+			log( temp[x,y2[x]] )
+		})
+	value = -mean(temp2)
+	return(value)
+	}
+	
+	train.logloss = log.loss(pred1,y1)
+  cat("Training Error Rate =",train.logloss)
+  cat("\n")
+```
+算test-logloss
+```{r, echo = FALSE}
+	pred2 = predict(xgb_model,dtest)
+	pred2 = t(matrix(pred2,nrow=4)) %>% data.table
+	colnames(pred2) = c("Adoption", 
+				 "Euthanasia", 
+				"Return_to_owner", "Transfer")
+		
+	#correct max value
+	find.max.fun=function(temp){
+	value = which( ( temp == max(temp) )==1 )-1
+	return(value)
+}
+	
+	
+	pred2$class = apply(pred2,1,find.max.fun)
+  pred2
+  
+  cat("The confusion Matrix of testing data.")
+  cat("\n")
+	table(y2,pred2$class)
+	
+	log.loss=function(pred1,y1)
+	  {
+	y2=y1+1
+	
+	temp <- pred1[,1:4,with=F] %>% as.matrix
+		
+	temp2 = sapply(c(1: length(y2) ),function(x){
+			log( temp[x,y2[x]] )
+		})
+	value = -mean(temp2)
+	return(value)
+	}
+	
+	test.logloss = log.loss(pred2,y2)
+	cat("Testing Error Rate =",test.logloss)
+  cat("\n")
+	
+```
+
+
+
+
+$$結論$$
+====
+1.   這筆資料因為安樂死的資料過少，所以導致SVM、RF預測的不好， 但在XGBoost就沒有這個問題，所以XGBoost對於這個方面的處理比較好。   
+2.   在同樣的抽樣資料之下，XGBoost方法是最好的。   
+3.   根據觀察其他人做的kernel，我們在資料處理方面，做得不完善，導致我們去Machine Leanrning的時候，結果不會預測的比較好。   
+
+
+
+$$Reference$$
+===
+https://www.kaggle.com/apapiu/visualizing-breeds-and-ages-by-outcome/code/notebook  
+https://www.kaggle.com/mrisdal/quick-dirty-randomforest/code  
+https://www.kaggle.com/fsmithus/reduced-model  
+https://cran.r-project.org/web/packages/randomForest/randomForest.pdf  
+https://cran.r-project.org/web/packages/xgboost/xgboost.pdf  
+https://stackoverflow.com/questions/24197809/functionality-of-probability-true-in-svm-function-of-e1071-package-in-r   
+https://cran.r-project.org/web/packages/e1071/vignettes/svmdoc.pdf
+林子軒學長!!!!!!! by 潘星丞
+https://stackoverflow.com/questions/16961921/plot-data-in-descending-order-as-appears-in-data-frame
